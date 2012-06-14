@@ -1,0 +1,5 @@
+NonBlockingENGine by <dsp@2f30.org>
+A nonblocking client/server engine for future
+use on sscall.
+(https://github.com/quantumdream/sscall.git)
+Will support SSL connections via ASSL.
