@@ -1,5 +1,8 @@
 NonBlockingENGine by <dsp@2f30.org>
-A nonblocking client/server engine for future
-use on sscall.
+
+A nonblocking client/server engine for future use on sscall.
 (https://github.com/quantumdream/sscall.git)
 Will support SSL connections via ASSL.
+to test get a netcat proccess listening for udp on a port:
+nc -ul 127.0.0.1 8888
+./nbeng 127.0.0.1 8888 1234
