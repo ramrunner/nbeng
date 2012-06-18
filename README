@@ -1,8 +1,15 @@
-NonBlockingENGine by <dsp@2f30.org>
+NonBlockingENGine by <dsp@2f30.org>,<lostd@2f30.org>
 
 A nonblocking client/server engine for future use on sscall.
 (https://github.com/quantumdream/sscall.git)
-Will support SSL connections via ASSL.
+Will support SSL connections via a custom SSL wrapper.
+For SSL you have to create and sign certificates and keys
+by running the scripts in the ssl/ directory.
+
+cd ssl/; sh create_ca; sh create_client; sh create_server;
+sh sign_client; sh sign_server;
+
 to test get a netcat proccess listening for udp on a port:
-nc -ul 127.0.0.1 8888
-./nbeng 127.0.0.1 8888 1234
+(BOX1) nc -ul 8888 (see the data that BOX2 sends)
+(BOX2) ./nbeng BOX1 8888 (send data to BOX1 and recv from it)
+(BOX1) nc -u BOX2 (send data to BOX2)

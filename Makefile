@@ -8,9 +8,8 @@ CC = gcc
 INCS = -I/usr/local/include
 LIBS = -L/usr/local/lib
 
-CFLAGS += -Wall -Wextra -Wunused -DVERSION=\"${VER}\" ${INCS}
-#add assl
-#LDFLAGS += -lassl ${LIBS}
+CFLAGS += -Wall -Wextra -Wunused -g -DVERSION=\"${VER}\" ${INCS}
+LDFLAGS += ${LIBS}
 
 $(BIN): ${OBJ}
 	${CC} ${CFLAGS} ${LDFLAGS} -o $@ ${OBJ}
@@ -19,6 +18,6 @@ $(BIN): ${OBJ}
 	${CC} ${CFLAGS} -c -o $@ $<
 
 clean:
-	rm -rf ${BIN} ${OBJ}
+	rm -rf ${BIN} ${OBJ} *.core
 
 all: nbeng
