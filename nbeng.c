@@ -90,6 +90,7 @@ prepare_socket(concontxt *c, char *to, char *port)
 	memset(&cli_hints, 0, sizeof(cli_hints));
 	memset(&srv_hints, 0, sizeof(srv_hints));
 	cli_hints.ai_family = srv_hints.ai_family = AF_INET;
+	srv_hints.ai_flags = AI_PASSIVE;
 	cli_hints.ai_socktype = srv_hints.ai_socktype = ((c->contype == TCPCON) ||
 							 (c->contype == SSLCON)) ? SOCK_STREAM : SOCK_DGRAM;
 	rv = getaddrinfo(to, port, &cli_hints, &cli_servinfo);
@@ -161,12 +162,12 @@ stdinputdata(concontxt *con)
         }
         if ((strncmp(inbuf, "Q", 2) == 0))
                 goto endit;
-        printf("got msg: %s , sending it\n", inbuf);
+       	printf("got msg: %s len %d, to : %x sending it\n", inbuf,inbufln,con->clinfo->ai_addr);
 	if (con->contype == UDPCON) {
         	sent = sendto(con->confd, inbuf, inbufln, 0,
         	con->clinfo->ai_addr,
         	con->clinfo->ai_addrlen);
-		if(sent == -1)
+		if(sent < 0 )
 			warn("sendto failed");
 	} else {
 		/* code for tcp */
