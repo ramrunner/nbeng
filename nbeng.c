@@ -22,15 +22,20 @@
 #include <err.h>
 #include <errno.h>
 
-/* TCP flag */
-unsigned int ftcp = 0;
+/*connection types*/
+#define UDPCON 1
+#define TCPCON 2
+#define SSLCON 3
 
 /* flag to know when to quit the prog */
 unsigned int quitflag=0;
 
 /* connection context */
 typedef struct concontxt_t {
+	unsigned int contype; /* connection type */
 	int confd; /* net connection fd */
+	int clifds[FD_SETSIZE]; /* for tcp connected clients */
+	fd_set lset; /* the set that we select() on */
 	struct addrinfo *clinfo; /* info on where we connect */
 	struct addrinfo *srvinfo; /* info for the local part */
 } concontxt;
@@ -73,7 +78,7 @@ set_blocking(int fd)
  * a) connection to the other endpoint.
  * b) being able to receive data.
  * when it is ready it sets the fields in the context.
- * XXX: add a flag in the parameter list for type (tcp/udp/ssl)
+ * the flag for the connection type lives in the context.
  */
 static void
 prepare_socket(concontxt *c, char *to, char *port) 
@@ -85,7 +90,8 @@ prepare_socket(concontxt *c, char *to, char *port)
 	memset(&cli_hints, 0, sizeof(cli_hints));
 	memset(&srv_hints, 0, sizeof(srv_hints));
 	cli_hints.ai_family = srv_hints.ai_family = AF_INET;
-	cli_hints.ai_socktype = srv_hints.ai_socktype = ftcp ? SOCK_STREAM : SOCK_DGRAM;
+	cli_hints.ai_socktype = srv_hints.ai_socktype = ((c->contype == TCPCON) ||
+							 (c->contype == SSLCON)) ? SOCK_STREAM : SOCK_DGRAM;
 	rv = getaddrinfo(to, port, &cli_hints, &cli_servinfo);
 	if (rv)
 		errx(1, "getaddrinfo: %s", gai_strerror(rv));
@@ -120,6 +126,9 @@ prepare_socket(concontxt *c, char *to, char *port)
 	}
 	if (!p0)
 		errx(1, "failed to bind socket");
+	/* if it's a tcp connection we have to listen() */
+	if (c->contype != UDPCON)
+		listen(cli_sockfd,5);
 	/* all was ok, so we register the socket to the context */
 	c->confd = cli_sockfd;
 	c->clinfo = cli_servinfo;
@@ -133,7 +142,7 @@ prepare_socket(concontxt *c, char *to, char *port)
 static void
 stdinputdata(concontxt *con)
 {	char *inbuf = NULL, *linbuf = NULL;
-	ssize_t inbufln;
+	ssize_t inbufln,sent;
         /* deal with input data */
         inbuf = fgetln(stdin, &inbufln);
         if (inbuf[inbufln - 1] == '\n')
@@ -151,12 +160,14 @@ stdinputdata(concontxt *con)
                 inbuf = linbuf;
         }
         if ((strncmp(inbuf, "Q", 2) == 0))
-                goto freex;
+                goto endit;
         printf("got msg: %s , sending it\n", inbuf);
-	if (ftcp == 0) {
-        	sendto(con->confd, inbuf, inbufln, 0,
+	if (con->contype == UDPCON) {
+        	sent = sendto(con->confd, inbuf, inbufln, 0,
         	con->clinfo->ai_addr,
         	con->clinfo->ai_addrlen);
+		if(sent == -1)
+			warn("sendto failed");
 	} else {
 		/* code for tcp */
 	}
@@ -165,7 +176,10 @@ stdinputdata(concontxt *con)
 freex:  
 	if(linbuf != NULL)
                 free(linbuf);
-	/* let the main process know we want out */
+	return; /*here we normally go out*/
+endit:	/* let the main process know we want out */
+	if(linbuf != NULL)
+                free(linbuf);
 	quitflag=1;
 }
 
@@ -176,14 +190,14 @@ freex:
 static void
 srvinputdata(concontxt *con)
 {
-	ssize_t bytes;
+	ssize_t bytes=0;
 	int ret;
 	char host[NI_MAXHOST];
 	char buf[512];
 	socklen_t addr_len;
 	struct sockaddr_storage their_addr;
 	addr_len = sizeof(their_addr);
-	if (ftcp == 0) {
+	if (con->contype == UDPCON) {
 		bytes = recvfrom(con->confd, buf,
 				sizeof(buf), MSG_DONTWAIT,
 				(struct sockaddr *)&their_addr,
@@ -215,6 +229,10 @@ main(int argc, char *argv[])
 	int highsock, readsocks;
 	struct timeval timeout;
 	concontxt *con = (concontxt *) malloc(sizeof (concontxt));
+	if (con == NULL)
+		errx(1,"malloc");
+	/* our default is the udp connection type */
+	con->contype = UDPCON;
 	while ((c = getopt(argc, argv, "ht")) != -1) {
 		switch (c) {
 		case 'h':
@@ -222,7 +240,7 @@ main(int argc, char *argv[])
 			goto freex;
 			break;
 		case 't':
-			ftcp = 1;
+			con->contype = TCPCON;
 			break;
 		case '?':
 		default:
@@ -236,23 +254,23 @@ main(int argc, char *argv[])
 		usage(prog);
 		goto freex;
 	}
-	if (ftcp == 0) {
-		/* prepare the socket for udp */
-		prepare_socket(con, argv[0], argv[1]);
-	} else {
-		/* code for tcp */
-	}
+	prepare_socket(con, argv[0], argv[1]);
 	highsock = con->confd;
+	/*FD_ZERO(&(con->lset));
+	FD_SET(recfd, &(con->lset));
+	FD_SET(con->confd, &(con->lset));
+	timeout.tv_sec = 1;
+	timeout.tv_usec = 0; */
 	/* these are the sockets for reading (stdin + connection fd) */
 	while (1) {
+		FD_ZERO(&(con->lset));
+		FD_SET(recfd, &(con->lset));
+		FD_SET(con->confd, &(con->lset));
+		timeout.tv_sec = 1;
+		timeout.tv_usec = 0; 
 		if (quitflag)
 			goto freex;
-		FD_ZERO(&rsocks);
-		FD_SET(recfd, &rsocks);
-		FD_SET(con->confd, &rsocks);
-		timeout.tv_sec = 1;
-		timeout.tv_usec = 0;
-		readsocks = select(highsock + 1, &rsocks, (fd_set *)0, 
+		readsocks = select(highsock + 1, &(con->lset), (fd_set *)0, 
 		  (fd_set *)0, &timeout);
 		if (readsocks < 0) {
 			warnx("select error");
@@ -263,10 +281,10 @@ main(int argc, char *argv[])
 			printf(".");
 			fflush(stdout);
 		} else {
-			if (FD_ISSET(recfd, &rsocks)) {
+			if (FD_ISSET(recfd, &(con->lset))) {
                                 stdinputdata(con);
 			}
-			if (FD_ISSET(con->confd, &rsocks)) {
+			if (FD_ISSET(con->confd, &(con->lset))) {
 				srvinputdata(con);
 			}
 		}
