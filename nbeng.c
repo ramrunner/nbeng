@@ -43,10 +43,9 @@ typedef struct concontxt_t {
 static void
 usage(const char *s)
 {
-        fprintf(stderr, "usage: %s [OPTIONS] "
-	                "<remote-addr> <remote-port>\n", s);
-        fprintf(stderr, " -t\ttcp session\n");
-        fprintf(stderr, " -h\tThis help screen\n");
+        fprintf(stderr, "usage: %s [-ht] rhost rport\n"
+                        " -t\ttcp session\n"
+                        " -h\tThis help screen\n", s);
 }
 
 static void
@@ -84,15 +83,21 @@ static void
 prepare_socket(concontxt *c, char *to, char *port) 
 {
 	struct addrinfo cli_hints, *cli_servinfo, srv_hints, *srv_servinfo, *p0;
-	int rv, cli_sockfd,optval=1;
+	int rv, cli_sockfd, optval = 1, i;
+
+	/* all client fds are available */
+	for (i = 0; i < FD_SETSIZE; i++)
+		c->clifds[i] = -1;
+
 	if ((c == NULL) || (to == NULL) || (port == NULL))
 		errx(1, "prepare_socket was passed a null arg");
 	memset(&cli_hints, 0, sizeof(cli_hints));
 	memset(&srv_hints, 0, sizeof(srv_hints));
 	cli_hints.ai_family = srv_hints.ai_family = AF_INET;
 	srv_hints.ai_flags = AI_PASSIVE;
-	cli_hints.ai_socktype = srv_hints.ai_socktype = ((c->contype == TCPCON) ||
-							 (c->contype == SSLCON)) ? SOCK_STREAM : SOCK_DGRAM;
+	cli_hints.ai_socktype = srv_hints.ai_socktype =
+	    ((c->contype == TCPCON) || (c->contype == SSLCON))
+	    ? SOCK_STREAM : SOCK_DGRAM;
 	rv = getaddrinfo(to, port, &cli_hints, &cli_servinfo);
 	if (rv)
 		errx(1, "getaddrinfo: %s", gai_strerror(rv));
@@ -143,7 +148,9 @@ prepare_socket(concontxt *c, char *to, char *port)
 static void
 stdinputdata(concontxt *con)
 {	char *inbuf = NULL, *linbuf = NULL;
-	ssize_t inbufln,sent;
+	ssize_t inbufln, sent;
+	int tcpfd, i;
+
         /* deal with input data */
         inbuf = fgetln(stdin, &inbufln);
         if (inbuf[inbufln - 1] == '\n')
@@ -165,12 +172,25 @@ stdinputdata(concontxt *con)
        	printf("got msg: %s len %d, to : %x sending it\n", inbuf,inbufln,con->clinfo->ai_addr);
 	if (con->contype == UDPCON) {
         	sent = sendto(con->confd, inbuf, inbufln, 0,
-        	con->clinfo->ai_addr,
-        	con->clinfo->ai_addrlen);
-		if(sent < 0 )
+        	    con->clinfo->ai_addr,
+        	    con->clinfo->ai_addrlen);
+		if(sent < 0)
 			warn("sendto failed");
 	} else {
-		/* code for tcp */
+		tcpfd = connect(con->confd,
+        	    con->clinfo->ai_addr,
+        	    con->clinfo->ai_addrlen);
+		if (tcpfd < 0) {
+			warn("tcp connect");
+			goto freex;
+		}
+		/* XXX: check if we hit the setsiz limit */
+		for (i = 0; i < FD_SETSIZE; i++) {
+			if (con->clifds[i] == -1) {
+				con->clifds[i] = tcpfd;
+				break;
+			}
+		}
 	}
         fflush(stdout);
         /* free the buf */
@@ -225,7 +245,7 @@ main(int argc, char *argv[])
 	/* our input is the stdin for now, we record lines and send them */
 	int recfd = STDIN_FILENO;
 	char *prog = *argv;
-	int c;
+	int c,i;
 	fd_set rsocks;
 	int highsock, readsocks;
 	struct timeval timeout;
@@ -262,13 +282,17 @@ main(int argc, char *argv[])
 	FD_SET(con->confd, &(con->lset));
 	timeout.tv_sec = 1;
 	timeout.tv_usec = 0; */
+	timeout.tv_sec = 1;
+	timeout.tv_usec = 0; 
 	/* these are the sockets for reading (stdin + connection fd) */
 	while (1) {
 		FD_ZERO(&(con->lset));
 		FD_SET(recfd, &(con->lset));
 		FD_SET(con->confd, &(con->lset));
-		timeout.tv_sec = 1;
-		timeout.tv_usec = 0; 
+		/* add all connected clients */
+		for (i = 0; i < FD_SETSIZE && con->clifds[i] != -1; i++) {
+			FD_SET(con->clifds[i], &(con->lset));
+		}
 		if (quitflag)
 			goto freex;
 		readsocks = select(highsock + 1, &(con->lset), (fd_set *)0, 
