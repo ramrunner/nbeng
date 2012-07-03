@@ -374,10 +374,10 @@ main(int argc, char *argv[])
 
 	prepare_socket(con, host, port, 1);
 
-	timeout.tv_sec = 1;
-	timeout.tv_usec = 0; 
 	/* file descriptors for reading are stdin and confd */
 	while (1) {
+		timeout.tv_sec = 1;
+		timeout.tv_usec = 0; 
 		FD_ZERO(&(con->lset));
 		FD_SET(con->wfd, &(con->lset));
 		highsock = con->wfd;
@@ -397,11 +397,8 @@ main(int argc, char *argv[])
 			warn("select");
 			goto freex;
 		}
-		if (readsocks == 0) {
-			/* show that we are alive */
-			printf(".");
-			fflush(stdout);
-		} else {
+		/* change this to == 0 and put default printout if necessary */
+		if (readsocks != 0) {
 			if (FD_ISSET(con->wfd, &(con->lset))) {
 				if (con->clifd == -1
 				    && con->contype != UDPCON) {
