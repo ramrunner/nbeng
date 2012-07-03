@@ -126,18 +126,16 @@ prepare_socket(concontxt *con, char *host, char *port, int lflag)
 	if (!p0)
 		err(1, "socket");
 	/* the same for our local part */
-	if (lflag) {
-		for (p0 = srv_servinfo; p0; p0 = p0->ai_next) {
-			if (bind(cli_sockfd, p0->ai_addr, p0->ai_addrlen) < 0) {
-				close(cli_sockfd);
-				warn("bind");
-				continue;
-			}
-			break;
+	for (p0 = srv_servinfo; p0; p0 = p0->ai_next) {
+		if (bind(cli_sockfd, p0->ai_addr, p0->ai_addrlen) < 0) {
+			close(cli_sockfd);
+			warn("bind");
+			continue;
 		}
-		if (!p0)
-			err(1, "bind");
+		break;
 	}
+	if (!p0)
+		err(1, "bind");
 	/* if it's a tcp connection we have to listen() */
 	if (con->contype != UDPCON && lflag)
 		listen(cli_sockfd, 5);
