@@ -34,7 +34,6 @@ typedef struct concontxt_t {
 #define SSLCON 3
 	unsigned int contype; /* connection type */
 	int confd; /* net connection fd */
-	int clifd;
 	int clifds[FD_SETSIZE]; /* for tcp connected clients */
 	fd_set lset; /* the set that we select() on */
 	struct addrinfo *clinfo; /* info on where we connect */
@@ -90,7 +89,11 @@ static void
 prepare_socket(concontxt *con, char *host, char *port) 
 {
 	struct addrinfo cli_hints, *cli_servinfo, srv_hints, *srv_servinfo, *p0;
-	int rv, cli_sockfd, optval = 1;
+	int rv, cli_sockfd, optval = 1, i;
+
+	/* all client fds are available */
+	for (i = 0; i < FD_SETSIZE; i++)
+		con->clifds[i] = -1;
 
 	if ((con == NULL) || (host == NULL) || (port == NULL))
 		errx(1, "prepare_socket was passed a null arg");
@@ -136,8 +139,8 @@ prepare_socket(concontxt *con, char *host, char *port)
 	if (!p0)
 		errx(1, "failed to bind socket");
 	/* if it's a tcp connection we have to listen() */
-//	if (con->contype != UDPCON)
-//		listen(cli_sockfd, 5);
+	if (con->contype != UDPCON)
+		listen(cli_sockfd, 5);
 	/* all was ok, so we register the socket to the context */
 	con->confd = cli_sockfd;
 	con->clinfo = cli_servinfo;
@@ -187,25 +190,34 @@ freex:
 static void
 writesock(concontxt *con)
 {
-	ssize_t n;
+	ssize_t sent;
+	int newfd;
+	int i;
 
 	/* nothing to do */
 	if (con->buf == NULL)
 		return;
 
 	if (con->contype == UDPCON) {
-        	n = sendto(con->confd, con->buf, con->buflen, 0,
+        	sent = sendto(con->confd, con->buf, con->buflen, 0,
         	    con->clinfo->ai_addr,
         	    con->clinfo->ai_addrlen);
-		if (n < 0)
+		if (sent < 0)
 			warn("sendto");
 	} else {
-		n = write(con->clifd, con->buf, con->buflen);
-		if (n < 0) {
-			warn("write");
-			close(con->clifd);
-			con->clifd = -1;
+		newfd = connect(con->confd,
+        	    con->clinfo->ai_addr,
+        	    con->clinfo->ai_addrlen);
+		printf("newfd=%d\n", newfd);
+		if (newfd < 0) {
+			warn("connect");
 			goto freex;
+		}
+		for (i = 0; i < FD_SETSIZE; i++) {
+			if (con->clifds[i] == -1) {
+				con->clifds[i] = newfd;
+				break;
+			}
 		}
 	}
 
@@ -234,26 +246,9 @@ readsock(concontxt *con)
 	if (con->contype == UDPCON) {
 		n = recvfrom(con->confd, buf, sizeof (buf), MSG_DONTWAIT,
 		    (struct sockaddr *)&their_addr, &addr_len);
-		if (n < 0) {
-			warn("recvfrom");
-			goto freex;
-		}
-
-		/* resolv */
-		r = getnameinfo((struct sockaddr *)&their_addr, addr_len,
-		    host, sizeof (host), NULL, 0, 0);
-		if (r < 0) {
-			warn("getnameinfo");
-			snprintf(host, sizeof (host), "unknown");
-		}
-		printf("host=%s\n", host);
 	} else {
-		n = read(con->clifd, buf, sizeof (buf));
-		if (n == 0) {
-			close(con->clifd);
-			con->clifd = -1;
-			goto freex;
-		}
+		/* code for tcp */
+		n = 0;
 	}
 	buf[n] = '\0';
 
@@ -264,7 +259,16 @@ readsock(concontxt *con)
 	}
 	memcpy(con->buf, buf, n);
 	con->buflen = n;
-       	printf("n=%zd buf=%s", n, buf);
+
+	if (n > 0) {
+		r = getnameinfo((struct sockaddr *)&their_addr, addr_len,
+		    host, sizeof (host), NULL, 0, 0);
+		if (r < 0) {
+			warn("getnameinfo");
+			snprintf(host, sizeof (host), "unknown");
+		}
+	}
+       	printf("host=%s n=%zd buf=%s", host, n, buf);
 	return;
 
 freex:
@@ -290,55 +294,10 @@ writestdout(concontxt *con)
 	return;
 }
 
-static void
-myaccept(concontxt *con)
-{
-	int r;
-	char host[NI_MAXHOST];
-	int newfd;
-	struct sockaddr_storage sa;
-	socklen_t salen = sizeof (sa);
-
-	newfd = accept(con->confd, (struct sockaddr *)&sa, &salen);
-	printf("newfd=%d\n", newfd);
-	if (newfd < 0) {
-		warn("accept");
-		return;
-	}
-	con->clifd = newfd;
-
-	/* resolv */
-	r = getnameinfo((struct sockaddr *)&sa, salen,
-	    host, sizeof (host), NULL, 0, 0);
-	if (r < 0) {
-		warn("getnameinfo");
-		snprintf(host, sizeof (host), "unknown");
-	}
-	printf("host=%s\n", host);
-	return;
-}
-
-static void
-myconnect(concontxt *con)
-{
-	int r;
-
-	r = connect(con->confd,
-	    con->clinfo->ai_addr,
-	    con->clinfo->ai_addrlen);
-	printf("newfd=%d\n", con->confd);
-	if (r < 0) {
-		warn("connect");
-		return;
-	}
-	con->clifd = con->confd;
-	return;
-}
-
 int 
 main(int argc, char *argv[])
 {
-	int c;
+	int c, i;
 	int highsock, readsocks;
 	struct timeval timeout;
 	char *host, *port;
@@ -371,7 +330,6 @@ main(int argc, char *argv[])
 	con->wfd = fileno(stdin);
 	con->lfd = fileno(stdout);
 	con->contype = (tflag || sflag) ? TCPCON : UDPCON;
-	con->clifd = -1;
 
 	prepare_socket(con, host, port);
 
@@ -383,9 +341,9 @@ main(int argc, char *argv[])
 		FD_SET(con->wfd, &(con->lset));
 		FD_SET(con->confd, &(con->lset));
 		highsock = con->confd;
-		if (con->clifd != -1) {
-			FD_SET(con->clifd, &(con->lset));
-			highsock = con->clifd;
+		/* add all connected clients */
+		for (i = 0; i < FD_SETSIZE && con->clifds[i] != -1; i++) {
+			FD_SET(con->clifds[i], &(con->lset));
 		}
 		if (qflag)
 			goto freex;
@@ -401,23 +359,10 @@ main(int argc, char *argv[])
 			fflush(stdout);
 		} else {
 			if (FD_ISSET(con->wfd, &(con->lset))) {
-				if (con->clifd == -1
-				    && con->contype != UDPCON)
-					myconnect(con);
-				readstdin(con);
-				writesock(con);
+                                readstdin(con);
+                                writesock(con);
 			}
 			if (FD_ISSET(con->confd, &(con->lset))) {
-				if (con->contype == UDPCON) {
-					readsock(con);
-					writestdout(con);
-				} else {
-					if (con->clifd == -1)
-						myaccept(con);
-				}
-			}
-			if (con->clifd != -1 &&
-			    FD_ISSET(con->clifd, &(con->lset))) {
 				readsock(con);
 				writestdout(con);
 			}
